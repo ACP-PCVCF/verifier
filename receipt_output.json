@@ -1,0 +1,93 @@
+{
+  "image_id": "21c0d12a3642fd33d9004fe6fe20daacce802354ca35e6549f366aa570c88333",
+  "receipt": {
+    "inner": {
+      "Fake": {
+        "claim": {
+          "Value": {
+            "pre": {
+              "Value": {
+                "pc": 0,
+                "merkle_root": [
+                  1378485847,
+                  528732679,
+                  598092070,
+                  758881885,
+                  1145955832,
+                  1089387884,
+                  1976920772,
+                  1315133146
+                ]
+              }
+            },
+            "post": {
+              "Value": {
+                "pc": 0,
+                "merkle_root": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            },
+            "exit_code": {
+              "Halted": 0
+            },
+            "input": {
+              "Pruned": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            },
+            "output": {
+              "Value": {
+                "journal": {
+                  "Value": [
+                    160,
+                    128,
+                    0,
+                    0
+                  ]
+                },
+                "assumptions": {
+                  "Value": []
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "journal": {
+      "bytes": [
+        160,
+        128,
+        0,
+        0
+      ]
+    },
+    "metadata": {
+      "verifier_parameters": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  }
+}
