@@ -6,7 +6,7 @@ docker build -t risc0-verify-receipt .
 ```
 Run:
 ```
-docker run --rm risc0-verify-receipt
+docker run risc0-verify-receipt
 ```
 Change verifing mode in ./Dockerfile:
 ```
