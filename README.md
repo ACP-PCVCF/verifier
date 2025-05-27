@@ -1,4 +1,15 @@
-# How to
+# How to Rust
+
+Build:
+```
+cargo clean && cargo build 
+```
+Run:
+```
+cargo run
+```
+
+# How to Docker (not fixed)
 
 Build:
 ```

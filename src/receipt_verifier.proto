@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package receipt_verifier;
+
+service ReceiptVerifierService {
+  rpc VerifyReceiptStream (stream BytesChunk) returns (GrpcVerifyResponse);
+}
+
+
+message BytesChunk {
+  bytes data = 1;
+}
+
+message GrpcVerifyResponse {
+  bool valid = 1;
+  string message = 2;
+  optional uint32 journal_value = 3;
+}
