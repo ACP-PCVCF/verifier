@@ -9,17 +9,13 @@ Run:
 cargo run
 ```
 
-# How to Docker (not fixed)
+# How to Docker
 
 Build:
 ```
-docker build -t risc0-verify-receipt .   
+docker build -t verifier .   
 ```
 Run:
 ```
-docker run risc0-verify-receipt
-```
-Change verifing mode in ./Dockerfile:
-```
-ENV RISC0_DEV_MODE=1
+docker run -d -p 50051:50051 -p 3000:3000 --name verifier verifier
 ```

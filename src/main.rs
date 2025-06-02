@@ -172,10 +172,10 @@ impl ReceiptVerifierService for MyGrpcReceiptVerifier {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let axum_addr = SocketAddr::from(([127, 0, 0, 1], 3000));
-    let tonic_addr = SocketAddr::from(([127, 0, 0, 1], 50051));
-    //let axum_addr = SocketAddr::from(([0, 0, 0, 0], 3000));
-    //let tonic_addr = SocketAddr::from(([0, 0, 0, 0], 50051));
+    //let axum_addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+    //let tonic_addr = SocketAddr::from(([127, 0, 0, 1], 50051));
+    let axum_addr = SocketAddr::from(([0, 0, 0, 0], 3000));
+    let tonic_addr = SocketAddr::from(([0, 0, 0, 0], 50051));
 
     let http_router = Router::new()
         .route("/verify", post(verify_receipt_handler))
