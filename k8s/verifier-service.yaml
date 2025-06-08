@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: verifier-service
+  namespace: verifier-system 
+  labels:
+    app: verifier-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: verifier-service
+  template:
+    metadata:
+      labels:
+        app: verifier-service
+    spec:
+      containers:
+        - name: verifier
+          image: verifier-service:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 50051
+          env:
+            - name: RUST_LOG
+              value: info
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: verifier-service
+  namespace: verifier-system 
+spec:
+  selector:
+    app: verifier-service
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 50051 
+  type: ClusterIP
