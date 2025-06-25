@@ -1,6 +1,6 @@
 # Stage 1: Builder
 
-FROM rust:1.82 AS builder
+FROM rustlang/rust:nightly-bullseye AS builder
 WORKDIR /app
 RUN apt-get update && apt-get install -y protobuf-compiler pkg-config libssl-dev
 COPY Cargo.toml Cargo.lock ./

@@ -7,6 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tonic_build::configure()
         .out_dir("./src/generated_grpc")
+        .protoc_arg("--experimental_allow_proto3_optional")
         .compile(
             &["src/receipt_verifier.proto"],
             &["src"],

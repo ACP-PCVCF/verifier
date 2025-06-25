@@ -7,13 +7,27 @@ use axum::{
 };
 use anyhow::{Context, Result};
 use hex;
-use risc0_zkvm::Digest;
+use risc0_zkvm::{Digest};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tokio_stream::StreamExt;
 use tower_http::limit::RequestBodyLimitLayer;
+use rsa::{RsaPublicKey, pkcs1::DecodeRsaPublicKey, pkcs8::DecodePublicKey, pkcs1v15::Pkcs1v15Sign};
+use sha2::{Sha256, Digest as Sha2DigestTrait};
+use base64::{engine::general_purpose, Engine as _};
+use const_oid::AssociatedOid;
+use pkcs1::ObjectIdentifier;
+use digest::{
+    self,
+    Digest as DigestTrait,
+    OutputSizeUser,
+    Reset,
+    FixedOutputReset,
+    generic_array::GenericArray,
+    FixedOutput,
+    Update
+};
 
-// Stattdessen:
 mod generated_grpc {
     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated_grpc/receipt_verifier.rs"));
 }
@@ -35,6 +49,149 @@ struct AppResponse {
     journal_value: Option<u32>,
 }
 
+#[derive(Default, Clone)]
+struct Sha256WithOid(Sha256);
+
+impl AssociatedOid for Sha256WithOid {
+    const OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.2.1");
+}
+
+impl OutputSizeUser for Sha256WithOid {
+    type OutputSize = <Sha256 as OutputSizeUser>::OutputSize;
+}
+
+impl Update for Sha256WithOid {
+    fn update(&mut self, data: &[u8]) {
+        Update::update(&mut self.0, data);
+    }
+}
+
+impl FixedOutput for Sha256WithOid {
+    fn finalize_into(self, out: &mut GenericArray<u8, Self::OutputSize>) {
+        FixedOutput::finalize_into(self.0, out);
+    }
+}
+
+impl Reset for Sha256WithOid {
+    fn reset(&mut self) {
+        Reset::reset(&mut self.0);
+    }
+}
+
+impl FixedOutputReset for Sha256WithOid {
+     fn finalize_fixed_reset(&mut self) -> GenericArray<u8, Self::OutputSize> {
+        FixedOutputReset::finalize_fixed_reset(&mut self.0)
+     }
+     fn finalize_into_reset(&mut self, out: &mut GenericArray<u8, Self::OutputSize>) {
+        FixedOutputReset::finalize_into_reset(&mut self.0, out);
+     }
+}
+
+impl DigestTrait for Sha256WithOid {
+    fn new() -> Self {
+        Sha256WithOid(Sha256::new())
+    }
+
+    fn update(&mut self, data: impl AsRef<[u8]>) {
+        Update::update(self, data.as_ref());
+    }
+
+    fn finalize(self) -> GenericArray<u8, Self::OutputSize> {
+        DigestTrait::finalize(self.0)
+    }
+
+    fn new_with_prefix(data: impl AsRef<[u8]>) -> Self {
+        Sha256WithOid(Sha256::new_with_prefix(data))
+    }
+
+    fn chain_update(self, data: impl AsRef<[u8]>) -> Self {
+         Sha256WithOid(self.0.chain_update(data))
+    }
+
+    fn finalize_into(self, out: &mut GenericArray<u8, Self::OutputSize>) {
+        DigestTrait::finalize_into(self.0, out);
+    }
+
+    fn finalize_reset(&mut self) -> GenericArray<u8, Self::OutputSize> {
+        DigestTrait::finalize_reset(&mut self.0)
+    }
+
+    fn finalize_into_reset(&mut self, out: &mut GenericArray<u8, Self::OutputSize>) {
+        DigestTrait::finalize_into_reset(&mut self.0, out);
+    }
+
+    fn reset(&mut self) {
+        Reset::reset(&mut self.0);
+    }
+
+    fn output_size() -> usize {
+        <Sha256 as DigestTrait>::output_size()
+    }
+
+    fn digest(data: impl AsRef<[u8]>) -> GenericArray<u8, Self::OutputSize> {
+        <Sha256 as DigestTrait>::digest(data)
+    }
+}
+
+
+async fn verify_signature(commitment: &str, signed_sensor_data: &str, sensorkey: &str) -> bool {
+    let payload = &commitment;
+    let signature_b64 = &signed_sensor_data;
+    let public_key_pem = &sensorkey;
+
+    println!("Payload: {}", payload);
+    println!("Signature: {}", signature_b64);
+    println!("Public Key PEM: {}", public_key_pem);
+
+    let public_key = match RsaPublicKey::from_public_key_pem(public_key_pem) {
+        Ok(pk) => pk,
+        Err(e) => {
+            eprintln!("Fehler beim Laden des Public Keys (SPKI erwartet): {:?}", e);
+            match RsaPublicKey::from_pkcs1_pem(public_key_pem) {
+                Ok(pk_fallback) => {
+                    eprintln!("Warnung: Public Key wurde als PKCS#1 geladen, SPKI wird bevorzugt.");
+                    pk_fallback
+                },
+                Err(e_fallback) => {
+                    eprintln!("Fehler beim Laden des Public Keys auch als PKCS#1: {:?}", e_fallback);
+                    return false;
+                }
+            }
+        }
+    };
+
+    let mut hasher = Sha256::new();
+    Update::update(&mut hasher, payload.as_bytes());
+    let digest_val = hasher.finalize();
+
+    let signature = match general_purpose::STANDARD.decode(signature_b64) {
+        Ok(sig) => sig,
+        Err(e) => {
+            eprintln!("Fehler beim Dekodieren der Signatur: {:?}", e);
+            return false;
+        }
+    };
+
+    let padding = Pkcs1v15Sign::new::<Sha256WithOid>();
+    match public_key.verify(padding, &digest_val, &signature) {
+        Ok(_) => {
+            println!("Signatur ist gültig.");
+            true
+        }
+        Err(e) => {
+            eprintln!("Verifikation fehlgeschlagen: {:?}", e);
+            false
+        }
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy)]
+pub struct GuestMetrics {
+    pub start_cycles: u64,
+    pub end_cycles: u64,
+    pub risc_v_cycles: u64,
+}
+
 async fn verify_receipt_logic(export: ReceiptExport) -> Result<AppResponse> {
     println!("--- Start Receipt Verification (Logic) ---");
     println!("Empfangene Image ID (String): {}", export.image_id);
@@ -52,14 +209,30 @@ async fn verify_receipt_logic(export: ReceiptExport) -> Result<AppResponse> {
     match export.receipt.verify(image_id_digest) {
         Ok(_) => {
             println!("✅ Receipt Verifizierung erfolgreich.");
-            let journal_value = match risc0_zkvm::serde::from_slice::<u32, u8>(&export.receipt.journal.bytes) {
-                Ok(val) => Some(val),
-                Err(e) => {
-                    println!("Warnung: Journal konnte nicht als u32 deserialisiert werden: {:?}. Journal Bytes: {:?}", e, export.receipt.journal.bytes);
-                    None
-                }
-            };
-            println!("Extrahierter Journal Wert: {:?}", journal_value);
+
+            let (journal_value, guest_metrics, commitment, signed_sensor_data, sensorkey) =
+                match risc0_zkvm::serde::from_slice::<(u32, GuestMetrics, String, String, String), _>(&export.receipt.journal.bytes) {
+                    Ok((val, gm, com, sig, key)) => (Some(val), Some(gm), Some(com), Some(sig), Some(key)),
+                    Err(e) => {
+                        println!("Warnung: Journal konnte nicht als (u32, String, String, String) deserialisiert werden: {:?}. Journal Bytes: {:?}", e, export.receipt.journal.bytes);
+                        return Ok(AppResponse {
+                            valid: false,
+                            message: format!("❌ Journal Deserialisierung fehlgeschlagen: {:?}", e),
+                            journal_value: None,
+                        });
+                    }
+                };
+            
+            if !verify_signature(commitment.as_deref().unwrap(), signed_sensor_data.as_deref().unwrap(), sensorkey.as_deref().unwrap()).await {
+                println!("❌ Signaturverifizierung fehlgeschlagen.");
+                return Ok(AppResponse {
+                    valid: false,
+                    message: "❌ Signatur ist UNGÜLTIG!".to_string(),
+                    journal_value,
+                });
+            }
+            println!("✅ Signaturverifizierung erfolgreich.");
+            println!("Extrahierter Journal Wert: {:?}", journal_value.as_ref().unwrap());
             println!("--- Ende Receipt Verification (Logic - Erfolg) ---");
             Ok(AppResponse {
                 valid: true,
@@ -70,8 +243,6 @@ async fn verify_receipt_logic(export: ReceiptExport) -> Result<AppResponse> {
         Err(e) => {
             println!("❌ Receipt Verifizierung fehlgeschlagen. Fehler: {:?}", e);
             println!("--- Ende Receipt Verification (Logic - Fehler) ---");
-            // Es ist besser, hier auch einen Ok-Typ zurückzugeben, der den Fehlerzustand anzeigt,
-            // anstatt die Funktion mit einem Err abstürzen zu lassen, wenn der Handler dies nicht erwartet.
             Ok(AppResponse {
                 valid: false,
                 message: format!("❌ Receipt ist UNGÜLTIG: {:?}", e),
@@ -90,16 +261,14 @@ async fn verify_receipt_handler(
             if app_response.valid {
                 (StatusCode::OK, AxumJson(app_response))
             } else {
-                // Sie könnten hier einen anderen Statuscode für ungültige Receipts verwenden, z.B. BAD_REQUEST
                 (StatusCode::BAD_REQUEST, AxumJson(app_response))
             }
         }
         Err(e) => {
-            // Interner Serverfehler, wenn die Logik selbst fehlschlägt (nicht die Receipt-Verifizierung)
             eprintln!("Fehler in verify_receipt_logic: {:?}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                AxumJson(AppResponse { // Stellen Sie sicher, dass AppResponse hier serialisierbar ist
+                AxumJson(AppResponse { 
                     valid: false,
                     message: format!("Interner Serverfehler: {}", e),
                     journal_value: None,
@@ -172,6 +341,12 @@ impl ReceiptVerifierService for MyGrpcReceiptVerifier {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var("RISC0_DEV_MODE").unwrap_or_default() != "0" {
+        println!("Warnung: Server startet im RISC0_DEV_MODE. In diesem Modus werden keine echten ZK-Beweise verifiziert. Nur für Testzwecke geeignet.");
+    } else {
+        println!("Info: Server startet im Produktivmodus (RISC0_DEV_MODE=0).");
+    }
+
     //let axum_addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     //let tonic_addr = SocketAddr::from(([127, 0, 0, 1], 50051));
     let axum_addr = SocketAddr::from(([0, 0, 0, 0], 3000));
