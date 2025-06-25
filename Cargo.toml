@@ -1,12 +1,14 @@
+cargo-features = ["edition2024"]
+
 [package]
 name = "risc0-verify-receipt"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 axum = "~0.7.5"
 tokio = { version = "1", features = ["full"] }
-risc0-zkvm = { version = "^2.0.2" }
+risc0-zkvm = { version = "2.1.0", default-features = false }
 tonic = { version = "0.11.0", features = ["prost"] }
 prost = "0.12.3"
 tokio-stream = "0.1.15"
@@ -15,6 +17,14 @@ hex = "0.4"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 tower-http = { version = "0.5.2", features = ["limit"] }
+rsa = "0.9"
+rand = "0.8"
+sha2 = "0.10"
+base64 = "0.21"
+pem = "1.0"
+pkcs1 = "0.7"
+const-oid = "0.9"
+digest = "0.10"
 
 [build-dependencies]
 tonic-build = { version = "0.11.0", features = ["prost"] }
