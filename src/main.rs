@@ -27,6 +27,8 @@ use digest::{
     FixedOutput,
     Update
 };
+use bincode;
+use serde_json;
 
 mod generated_grpc {
     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/generated_grpc/receipt_verifier.rs"));
@@ -40,6 +42,12 @@ use generated_grpc::{
 struct ReceiptExport {
     image_id: String,
     receipt: risc0_zkvm::Receipt,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct GrpcRequestPayload {
+    image_id: String,
+    receipt: String,
 }
 
 #[derive(serde::Serialize, Debug)]
@@ -282,7 +290,7 @@ async fn verify_receipt_handler(
 pub struct MyGrpcReceiptVerifier;
 
 #[tonic::async_trait]
-impl ReceiptVerifierService for MyGrpcReceiptVerifier { 
+impl ReceiptVerifierService for MyGrpcReceiptVerifier {
     async fn verify_receipt_stream(
         &self,
         request: tonic::Request<tonic::Streaming<BytesChunk>>,
@@ -307,15 +315,43 @@ impl ReceiptVerifierService for MyGrpcReceiptVerifier {
         }
         println!("gRPC: Insgesamt {} Bytes empfangen.", received_bytes.len());
 
-        let payload: ReceiptExport = match serde_json::from_slice(&received_bytes) {
-            Ok(p) => p,
+        let request_payload: GrpcRequestPayload = match serde_json::from_slice(&received_bytes) {
+            Ok(payload) => payload,
             Err(e) => {
-                eprintln!("gRPC: Fehler beim Deserialisieren von JSON: {:?}", e);
+                eprintln!("gRPC: Fehler beim Deserialisieren der JSON-Payload: {:?}", e);
                 return Err(tonic::Status::invalid_argument(format!(
-                    "Ungültige JSON-Daten: {}",
+                    "Ungültige JSON-Payload: {}",
                     e
                 )));
             }
+        };
+
+        let decoded_bytes = match general_purpose::STANDARD.decode(&request_payload.receipt) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                eprintln!("gRPC: Fehler beim Dekodieren von Base64 aus dem 'receipt'-Feld: {:?}", e);
+                return Err(tonic::Status::invalid_argument(format!(
+                    "Ungültige Base64-Daten im 'receipt'-Feld: {}",
+                    e
+                )));
+            }
+        };
+        println!("gRPC: Base64-dekodierte Datenlänge: {}.", decoded_bytes.len());
+
+        let receipt: risc0_zkvm::Receipt = match bincode::deserialize(&decoded_bytes) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("gRPC: Fehler beim Deserialisieren des Receipts mit Bincode: {:?}", e);
+                return Err(tonic::Status::invalid_argument(format!(
+                    "Ungültige Bincode-Daten für Receipt: {}",
+                    e
+                )));
+            }
+        };
+
+        let payload = ReceiptExport {
+            image_id: request_payload.image_id,
+            receipt,
         };
 
         match verify_receipt_logic(payload).await {
