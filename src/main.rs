@@ -204,6 +204,13 @@ async fn verify_receipt_logic(export: ReceiptExport) -> Result<AppResponse> {
     println!("--- Start Receipt Verification (Logic) ---");
     println!("Empfangene Image ID (String): {}", export.image_id);
 
+    #[derive(serde::Deserialize)]
+    struct SignatureForHost {
+        commitment: String,
+        signature: String,
+        pub_key: String,
+    }
+
     let image_id_vec = hex::decode(&export.image_id)
         .context("Konvertierung der Image-ID von Hex zu Bytes fehlgeschlagen")?;
 
@@ -218,35 +225,68 @@ async fn verify_receipt_logic(export: ReceiptExport) -> Result<AppResponse> {
         Ok(_) => {
             println!("✅ Receipt Verifizierung erfolgreich.");
 
-            let (journal_value, guest_metrics, commitment, signed_sensor_data, sensorkey) =
-                match risc0_zkvm::serde::from_slice::<(u32, GuestMetrics, String, String, String), _>(&export.receipt.journal.bytes) {
-                    Ok((val, gm, com, sig, key)) => (Some(val), Some(gm), Some(com), Some(sig), Some(key)),
+            let (journal_value, _guest_metrics, encoded_signatures) =
+                match risc0_zkvm::serde::from_slice::<(u32, GuestMetrics, String), _>(&export.receipt.journal.bytes) {
+                    Ok((val, gm, encoded_sigs)) => (Some(val), Some(gm), Some(encoded_sigs)),
                     Err(e) => {
-                        println!("Warnung: Journal konnte nicht als (u32, String, String, String) deserialisiert werden: {:?}. Journal Bytes: {:?}", e, export.receipt.journal.bytes);
+                        let msg = format!("Journal konnte nicht als (u32, GuestMetrics, String) deserialisiert werden: {:?}", e);
+                        println!("Warnung: {}. Journal Bytes: {:?}", msg, export.receipt.journal.bytes);
                         return Ok(AppResponse {
                             valid: false,
-                            message: format!("❌ Journal Deserialisierung fehlgeschlagen: {:?}", e),
+                            message: format!("❌ Journal Deserialisierung fehlgeschlagen: {}", msg),
                             journal_value: None,
                         });
                     }
                 };
-            
-            if !verify_signature(commitment.as_deref().unwrap(), signed_sensor_data.as_deref().unwrap(), sensorkey.as_deref().unwrap()).await {
-                println!("❌ Signaturverifizierung fehlgeschlagen.");
-                return Ok(AppResponse {
-                    valid: false,
-                    message: "❌ Signatur ist UNGÜLTIG!".to_string(),
-                    journal_value,
-                });
+
+            let serialized_signatures = match base64::engine::general_purpose::STANDARD.decode(encoded_signatures.unwrap_or_default()) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    let msg = format!("Fehler beim Base64-Dekodieren der Signaturen: {:?}", e);
+                    eprintln!("{}", msg);
+                    return Ok(AppResponse { valid: false, message: msg, journal_value });
+                }
+            };
+
+            let signature_data_list: Vec<SignatureForHost> = match bincode::deserialize(&serialized_signatures) {
+                Ok(list) => list,
+                Err(e) => {
+                    let msg = format!("Fehler beim Bincode-Deserialisieren der Signaturliste: {:?}", e);
+                    eprintln!("{}", msg);
+                    return Ok(AppResponse { valid: false, message: msg, journal_value });
+                }
+            };
+
+            let mut all_signatures_valid = true;
+            if signature_data_list.is_empty() {
+                println!("Warnung: Keine Signaturen vom Guest erhalten.");
+                all_signatures_valid = false;
+            } else {
+                for (i, signature_data) in signature_data_list.iter().enumerate() {
+                    println!("--- Verifiziere Signatur {}/{} ---", i + 1, signature_data_list.len());
+                    if !verify_signature(&signature_data.commitment, &signature_data.signature, &signature_data.pub_key).await {
+                        all_signatures_valid = false; // Fehler wird bereits in verify_signature gedruckt
+                    }
+                }
             }
-            println!("✅ Signaturverifizierung erfolgreich.");
-            println!("Extrahierter Journal Wert: {:?}", journal_value.as_ref().unwrap());
-            println!("--- Ende Receipt Verification (Logic - Erfolg) ---");
-            Ok(AppResponse {
-                valid: true,
-                message: "✅ Receipt ist gültig!".to_string(),
-                journal_value,
-            })
+
+            if all_signatures_valid {
+                println!("✅ Alle Signaturen erfolgreich verifiziert!");
+                println!("Extrahierter Journal Wert: {:?}", journal_value.as_ref().unwrap());
+                println!("--- Ende Receipt Verification (Logic - Erfolg) ---");
+                Ok(AppResponse {
+                    valid: true,
+                    message: "✅ Receipt und alle Signaturen sind gültig!".to_string(),
+                    journal_value,
+                })
+            } else {
+                eprintln!("❌ Mindestens eine Signatur war ungültig.");
+                Ok(AppResponse {
+                    valid: false,
+                    message: "❌ Receipt ist gültig, aber mindestens eine Signatur war ungültig.".to_string(),
+                    journal_value,
+                })
+            }
         }
         Err(e) => {
             println!("❌ Receipt Verifizierung fehlgeschlagen. Fehler: {:?}", e);
