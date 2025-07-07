@@ -52,9 +52,9 @@ struct GrpcRequestPayload {
 
 #[derive(serde::Serialize, Debug)]
 struct AppResponse {
-    valid: bool,
+valid: bool,
     message: String,
-    journal_value: Option<u32>,
+    journal_value: Option<f64>,
 }
 
 #[derive(Default, Clone)]
@@ -225,11 +225,11 @@ async fn verify_receipt_logic(export: ReceiptExport) -> Result<AppResponse> {
         Ok(_) => {
             println!("✅ Receipt Verifizierung erfolgreich.");
 
-            let (journal_value, _guest_metrics, encoded_signatures) =
-                match risc0_zkvm::serde::from_slice::<(u32, GuestMetrics, String), _>(&export.receipt.journal.bytes) {
-                    Ok((val, gm, encoded_sigs)) => (Some(val), Some(gm), Some(encoded_sigs)),
+            let (journal_value, serialized_signatures) =
+                match risc0_zkvm::serde::from_slice::<(f64, Vec<u8>), _>(&export.receipt.journal.bytes) {
+                    Ok((val, serialized_sigs)) => (Some(val), Some(serialized_sigs)),
                     Err(e) => {
-                        let msg = format!("Journal konnte nicht als (u32, GuestMetrics, String) deserialisiert werden: {:?}", e);
+                        let msg = format!("Journal konnte nicht als (f64, Vec<u8>) deserialisiert werden: {:?}", e);
                         println!("Warnung: {}. Journal Bytes: {:?}", msg, export.receipt.journal.bytes);
                         return Ok(AppResponse {
                             valid: false,
@@ -239,16 +239,7 @@ async fn verify_receipt_logic(export: ReceiptExport) -> Result<AppResponse> {
                     }
                 };
 
-            let serialized_signatures = match base64::engine::general_purpose::STANDARD.decode(encoded_signatures.unwrap_or_default()) {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    let msg = format!("Fehler beim Base64-Dekodieren der Signaturen: {:?}", e);
-                    eprintln!("{}", msg);
-                    return Ok(AppResponse { valid: false, message: msg, journal_value });
-                }
-            };
-
-            let signature_data_list: Vec<SignatureForHost> = match bincode::deserialize(&serialized_signatures) {
+            let signature_data_list: Vec<SignatureForHost> = match bincode::deserialize(&serialized_signatures.unwrap()) {
                 Ok(list) => list,
                 Err(e) => {
                     let msg = format!("Fehler beim Bincode-Deserialisieren der Signaturliste: {:?}", e);

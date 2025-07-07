@@ -12,8 +12,8 @@ pub struct GrpcVerifyResponse {
     pub valid: bool,
     #[prost(string, tag = "2")]
     pub message: ::prost::alloc::string::String,
-    #[prost(uint32, optional, tag = "3")]
-    pub journal_value: ::core::option::Option<u32>,
+    #[prost(double, optional, tag = "3")]
+    pub journal_value: ::core::option::Option<f64>,
 }
 /// Generated client implementations.
 pub mod receipt_verifier_service_client {
