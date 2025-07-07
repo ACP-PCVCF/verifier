@@ -1,5 +1,3 @@
-use std::path::Path;
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:warning=OUT_DIR is {}", std::env::var("OUT_DIR").unwrap_or_default());
 

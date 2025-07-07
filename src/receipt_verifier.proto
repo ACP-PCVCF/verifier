@@ -14,5 +14,5 @@ message BytesChunk {
 message GrpcVerifyResponse {
   bool valid = 1;
   string message = 2;
-  optional uint32 journal_value = 3;
+  optional double journal_value = 3;
 }

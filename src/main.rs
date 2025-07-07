@@ -1,17 +1,8 @@
-use axum::{
-    extract::Json as AxumJson,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::post,
-    Router,
-};
 use anyhow::{Context, Result};
 use hex;
-use risc0_zkvm::{Digest};
+use risc0_zkvm::{Digest, Receipt};
 use std::net::SocketAddr;
-use tokio::net::TcpListener;
 use tokio_stream::StreamExt;
-use tower_http::limit::RequestBodyLimitLayer;
 use rsa::{RsaPublicKey, pkcs1::DecodeRsaPublicKey, pkcs8::DecodePublicKey, pkcs1v15::Pkcs1v15Sign};
 use sha2::{Sha256, Digest as Sha2DigestTrait};
 use base64::{engine::general_purpose, Engine as _};
@@ -52,9 +43,9 @@ struct GrpcRequestPayload {
 
 #[derive(serde::Serialize, Debug)]
 struct AppResponse {
-    valid: bool,
+valid: bool,
     message: String,
-    journal_value: Option<u32>,
+    journal_value: Option<f64>,
 }
 
 #[derive(Default, Clone)]
@@ -204,6 +195,13 @@ async fn verify_receipt_logic(export: ReceiptExport) -> Result<AppResponse> {
     println!("--- Start Receipt Verification (Logic) ---");
     println!("Empfangene Image ID (String): {}", export.image_id);
 
+    #[derive(serde::Deserialize)]
+    struct SignatureForHost {
+        commitment: String,
+        signature: String,
+        pub_key: String,
+    }
+
     let image_id_vec = hex::decode(&export.image_id)
         .context("Konvertierung der Image-ID von Hex zu Bytes fehlgeschlagen")?;
 
@@ -218,35 +216,59 @@ async fn verify_receipt_logic(export: ReceiptExport) -> Result<AppResponse> {
         Ok(_) => {
             println!("✅ Receipt Verifizierung erfolgreich.");
 
-            let (journal_value, guest_metrics, commitment, signed_sensor_data, sensorkey) =
-                match risc0_zkvm::serde::from_slice::<(u32, GuestMetrics, String, String, String), _>(&export.receipt.journal.bytes) {
-                    Ok((val, gm, com, sig, key)) => (Some(val), Some(gm), Some(com), Some(sig), Some(key)),
+            let (journal_value, serialized_signatures) =
+                match risc0_zkvm::serde::from_slice::<(f64, Vec<u8>), _>(&export.receipt.journal.bytes) {
+                    Ok((val, serialized_sigs)) => (Some(val), Some(serialized_sigs)),
                     Err(e) => {
-                        println!("Warnung: Journal konnte nicht als (u32, String, String, String) deserialisiert werden: {:?}. Journal Bytes: {:?}", e, export.receipt.journal.bytes);
+                        let msg = format!("Journal konnte nicht als (f64, Vec<u8>) deserialisiert werden: {:?}", e);
+                        println!("Warnung: {}. Journal Bytes: {:?}", msg, export.receipt.journal.bytes);
                         return Ok(AppResponse {
                             valid: false,
-                            message: format!("❌ Journal Deserialisierung fehlgeschlagen: {:?}", e),
+                            message: format!("❌ Journal Deserialisierung fehlgeschlagen: {}", msg),
                             journal_value: None,
                         });
                     }
                 };
-            
-            if !verify_signature(commitment.as_deref().unwrap(), signed_sensor_data.as_deref().unwrap(), sensorkey.as_deref().unwrap()).await {
-                println!("❌ Signaturverifizierung fehlgeschlagen.");
-                return Ok(AppResponse {
-                    valid: false,
-                    message: "❌ Signatur ist UNGÜLTIG!".to_string(),
-                    journal_value,
-                });
+
+            let signature_data_list: Vec<SignatureForHost> = match bincode::deserialize(&serialized_signatures.unwrap()) {
+                Ok(list) => list,
+                Err(e) => {
+                    let msg = format!("Fehler beim Bincode-Deserialisieren der Signaturliste: {:?}", e);
+                    eprintln!("{}", msg);
+                    return Ok(AppResponse { valid: false, message: msg, journal_value });
+                }
+            };
+
+            let mut all_signatures_valid = true;
+            if signature_data_list.is_empty() {
+                println!("Warnung: Keine Signaturen vom Guest erhalten.");
+                all_signatures_valid = false;
+            } else {
+                for (i, signature_data) in signature_data_list.iter().enumerate() {
+                    println!("--- Verifiziere Signatur {}/{} ---", i + 1, signature_data_list.len());
+                    if !verify_signature(&signature_data.commitment, &signature_data.signature, &signature_data.pub_key).await {
+                        all_signatures_valid = false; // Fehler wird bereits in verify_signature gedruckt
+                    }
+                }
             }
-            println!("✅ Signaturverifizierung erfolgreich.");
-            println!("Extrahierter Journal Wert: {:?}", journal_value.as_ref().unwrap());
-            println!("--- Ende Receipt Verification (Logic - Erfolg) ---");
-            Ok(AppResponse {
-                valid: true,
-                message: "✅ Receipt ist gültig!".to_string(),
-                journal_value,
-            })
+
+            if all_signatures_valid {
+                println!("✅ Alle Signaturen erfolgreich verifiziert!");
+                println!("Extrahierter Journal Wert: {:?}", journal_value.as_ref().unwrap());
+                println!("--- Ende Receipt Verification (Logic - Erfolg) ---");
+                Ok(AppResponse {
+                    valid: true,
+                    message: "✅ Receipt und alle Signaturen sind gültig!".to_string(),
+                    journal_value,
+                })
+            } else {
+                eprintln!("❌ Mindestens eine Signatur war ungültig.");
+                Ok(AppResponse {
+                    valid: false,
+                    message: "❌ Receipt ist gültig, aber mindestens eine Signatur war ungültig.".to_string(),
+                    journal_value,
+                })
+            }
         }
         Err(e) => {
             println!("❌ Receipt Verifizierung fehlgeschlagen. Fehler: {:?}", e);
@@ -256,32 +278,6 @@ async fn verify_receipt_logic(export: ReceiptExport) -> Result<AppResponse> {
                 message: format!("❌ Receipt ist UNGÜLTIG: {:?}", e),
                 journal_value: None,
             })
-        }
-    }
-}
-
-async fn verify_receipt_handler(
-    AxumJson(payload): AxumJson<ReceiptExport>,
-) -> impl IntoResponse {
-    println!("HTTP-Handler: Verifizierung für Payload: {:?}", payload);
-    match verify_receipt_logic(payload).await {
-        Ok(app_response) => {
-            if app_response.valid {
-                (StatusCode::OK, AxumJson(app_response))
-            } else {
-                (StatusCode::BAD_REQUEST, AxumJson(app_response))
-            }
-        }
-        Err(e) => {
-            eprintln!("Fehler in verify_receipt_logic: {:?}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                AxumJson(AppResponse { 
-                    valid: false,
-                    message: format!("Interner Serverfehler: {}", e),
-                    journal_value: None,
-                }),
-            )
         }
     }
 }
@@ -338,7 +334,7 @@ impl ReceiptVerifierService for MyGrpcReceiptVerifier {
         };
         println!("gRPC: Base64-dekodierte Datenlänge: {}.", decoded_bytes.len());
 
-        let receipt: risc0_zkvm::Receipt = match bincode::deserialize(&decoded_bytes) {
+        let receipt: Receipt = match bincode::deserialize(&decoded_bytes) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("gRPC: Fehler beim Deserialisieren des Receipts mit Bincode: {:?}", e);
@@ -383,24 +379,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Info: Server startet im Produktivmodus (RISC0_DEV_MODE=0).");
     }
 
-    //let axum_addr = SocketAddr::from(([127, 0, 0, 1], 3000));
-    //let tonic_addr = SocketAddr::from(([127, 0, 0, 1], 50051));
-    let axum_addr = SocketAddr::from(([0, 0, 0, 0], 3000));
     let tonic_addr = SocketAddr::from(([0, 0, 0, 0], 50051));
-
-    let http_router = Router::new()
-        .route("/verify", post(verify_receipt_handler))
-        .layer(RequestBodyLimitLayer::new(1024 * 1024 * 5));
-
-    let http_server_task = tokio::spawn(async move {
-        let listener = TcpListener::bind(axum_addr).await.unwrap();
-        println!("Axum HTTP Server läuft auf http://{}", axum_addr);
-        axum::serve(listener, http_router.into_make_service()).await.unwrap();
-    });
-
     let grpc_service_impl = MyGrpcReceiptVerifier::default();
     let tonic_service_server = ReceiptVerifierServiceServer::new(grpc_service_impl);
-
     let grpc_server_task = tokio::spawn(async move {
         println!("Tonic gRPC Server läuft auf http://{}", tonic_addr);
         if let Err(e) = tonic::transport::Server::builder()
@@ -412,6 +393,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let _ = tokio::try_join!(http_server_task, grpc_server_task);
+    let _ = tokio::join!(grpc_server_task);
     Ok(())
 }
