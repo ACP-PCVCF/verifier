@@ -1,17 +1,8 @@
-use axum::{
-    extract::Json as AxumJson,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::post,
-    Router,
-};
 use anyhow::{Context, Result};
 use hex;
-use risc0_zkvm::{Digest};
+use risc0_zkvm::{Digest, Receipt};
 use std::net::SocketAddr;
-use tokio::net::TcpListener;
 use tokio_stream::StreamExt;
-use tower_http::limit::RequestBodyLimitLayer;
 use rsa::{RsaPublicKey, pkcs1::DecodeRsaPublicKey, pkcs8::DecodePublicKey, pkcs1v15::Pkcs1v15Sign};
 use sha2::{Sha256, Digest as Sha2DigestTrait};
 use base64::{engine::general_purpose, Engine as _};
@@ -291,32 +282,6 @@ async fn verify_receipt_logic(export: ReceiptExport) -> Result<AppResponse> {
     }
 }
 
-async fn verify_receipt_handler(
-    AxumJson(payload): AxumJson<ReceiptExport>,
-) -> impl IntoResponse {
-    println!("HTTP-Handler: Verifizierung für Payload: {:?}", payload);
-    match verify_receipt_logic(payload).await {
-        Ok(app_response) => {
-            if app_response.valid {
-                (StatusCode::OK, AxumJson(app_response))
-            } else {
-                (StatusCode::BAD_REQUEST, AxumJson(app_response))
-            }
-        }
-        Err(e) => {
-            eprintln!("Fehler in verify_receipt_logic: {:?}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                AxumJson(AppResponse { 
-                    valid: false,
-                    message: format!("Interner Serverfehler: {}", e),
-                    journal_value: None,
-                }),
-            )
-        }
-    }
-}
-
 #[derive(Default)]
 pub struct MyGrpcReceiptVerifier;
 
@@ -369,7 +334,7 @@ impl ReceiptVerifierService for MyGrpcReceiptVerifier {
         };
         println!("gRPC: Base64-dekodierte Datenlänge: {}.", decoded_bytes.len());
 
-        let receipt: risc0_zkvm::Receipt = match bincode::deserialize(&decoded_bytes) {
+        let receipt: Receipt = match bincode::deserialize(&decoded_bytes) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("gRPC: Fehler beim Deserialisieren des Receipts mit Bincode: {:?}", e);
@@ -414,24 +379,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Info: Server startet im Produktivmodus (RISC0_DEV_MODE=0).");
     }
 
-    //let axum_addr = SocketAddr::from(([127, 0, 0, 1], 3000));
-    //let tonic_addr = SocketAddr::from(([127, 0, 0, 1], 50051));
-    let axum_addr = SocketAddr::from(([0, 0, 0, 0], 3000));
     let tonic_addr = SocketAddr::from(([0, 0, 0, 0], 50051));
-
-    let http_router = Router::new()
-        .route("/verify", post(verify_receipt_handler))
-        .layer(RequestBodyLimitLayer::new(1024 * 1024 * 5));
-
-    let http_server_task = tokio::spawn(async move {
-        let listener = TcpListener::bind(axum_addr).await.unwrap();
-        println!("Axum HTTP Server läuft auf http://{}", axum_addr);
-        axum::serve(listener, http_router.into_make_service()).await.unwrap();
-    });
-
     let grpc_service_impl = MyGrpcReceiptVerifier::default();
     let tonic_service_server = ReceiptVerifierServiceServer::new(grpc_service_impl);
-
     let grpc_server_task = tokio::spawn(async move {
         println!("Tonic gRPC Server läuft auf http://{}", tonic_addr);
         if let Err(e) = tonic::transport::Server::builder()
@@ -443,6 +393,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let _ = tokio::try_join!(http_server_task, grpc_server_task);
+    let _ = tokio::join!(grpc_server_task);
     Ok(())
 }
