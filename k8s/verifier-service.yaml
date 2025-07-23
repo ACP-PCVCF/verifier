@@ -17,8 +17,8 @@ spec:
     spec:
       containers:
         - name: verifier
-          image: verifier-service:latest
-          imagePullPolicy: Never
+          image: ghcr.io/acp-pcvcf/verifier:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 50051
           env:
