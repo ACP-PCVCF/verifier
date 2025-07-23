@@ -8,7 +8,7 @@ edition = "2024"
 [dependencies]
 axum = "~0.7.5"
 tokio = { version = "1", features = ["full"] }
-risc0-zkvm = { version = "2.1.0", default-features = false }
+risc0-zkvm = { version = "2.3.0", default-features = false }
 tonic = { version = "0.11.0", features = ["prost"] }
 prost = "0.12.3"
 tokio-stream = "0.1.15"
