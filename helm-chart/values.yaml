@@ -1,0 +1,21 @@
+image:
+  registry: "ghcr.io/acp-pcvcf"
+  repository: "verifier"
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+service:
+  name: verifier-service
+  port: 80
+  targetPort: 50051
+  type: ClusterIP
+
+deployment:
+  name: verifier-service
+  replicas: 1
+  containerPort: 50051
+
+environment:
+  rustLog: "info"
+
+namespace: verifier-system
