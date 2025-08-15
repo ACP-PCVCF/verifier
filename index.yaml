@@ -1,0 +1,14 @@
+apiVersion: v1
+entries:
+  verifier-service:
+  - apiVersion: v2
+    appVersion: 1.0.0
+    created: "2025-08-15T21:44:49.644882782Z"
+    description: A Helm chart for the verifier-service microservice
+    digest: f09a68256d9d1c6775796aa8f9980627dd77b45058eb2672609a14cec0e40e87
+    name: verifier-service
+    type: application
+    urls:
+    - https://github.com/ACP-PCVCF/verifier/releases/download/verifier-service-0.1.0/verifier-service-0.1.0.tgz
+    version: 0.1.0
+generated: "2025-08-15T21:44:49.644887652Z"
